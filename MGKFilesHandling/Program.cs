@@ -9,6 +9,8 @@ using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Xml;
 
 namespace MGKFilesHandling
 {
@@ -44,6 +46,7 @@ namespace MGKFilesHandling
         //public static string handleMashovURL = "https://oramwtest.metropark.co.il/MPFinesCollectionCenter/ReceivePortionMashovNewRest";
         public static string SendPortionURL = "https://oramw.metropark.co.il/MPFinesCollectionCenter/SendNewPacketRest";
         //public static string SendPortionURL = "https://oramwtest.metropark.co.il/MPFinesCollectionCenter/SendNewPacketRest";
+        public static string ReceivedPortionURL = "https://oramwtest.metropark.co.il/MPFinesCollectionCenter/";
 
 
         private static void WriteLog(string logFolder, string strLog)
@@ -434,12 +437,177 @@ namespace MGKFilesHandling
             }
 
         }
-        
+        static void CheckForRecievedFiles(string[] args)
+        {
+            int mana = 0;
+            if (!Directory.Exists(SafeLocationRead))
+                Directory.CreateDirectory(SafeLocationRead);
+            //DirectoryInfo di = new DirectoryInfo(SafeLocationRead);
+            //FileInfo[] files = di.GetFiles("4920_from_mgk_*.xml").ToArray();
+            string[] files = Directory.GetFiles(SafeLocationRead)
+                                  .Where(file => Path.GetFileName(file).StartsWith("4920_from_mgk_"))
+                                  .ToArray();
+            if(files.Length > 0)
+            {
+                mana = GetCurrentReceivedMana();
+                string fileFromMgkName = "4920_from_mgk_<MANAID>";
+                fileFromMgkName = fileFromMgkName.Replace("<MANAID>", mana.ToString().PadLeft(6, '0'));
+                bool fileExists = Directory.GetFiles(SafeLocationRead)
+                                   .Any(file => Path.GetFileName(file).StartsWith(fileFromMgkName));
+                if(fileExists)
+                {
+                    string filename = Directory.GetFiles(SafeLocationRead)
+                                   .First(file => Path.GetFileName(file).StartsWith(fileFromMgkName));
+                    XmlDocument xmlDoc = new XmlDocument();
+                    xmlDoc.Load(filename);
+                    XmlNode header = xmlDoc.SelectSingleNode("/updates_from_mgk/InterfaceHeader");
+                    XmlNode list = xmlDoc.SelectSingleNode("/updates_from_mgk/Elements");
+                    string attributeValue = header.ChildNodes[9].FirstChild.Value;
+                    int numOfElements = Convert.ToInt32(attributeValue);
+                    if(numOfElements == list.ChildNodes.Count)
+                    {
+                        string sendDatestr = header.ChildNodes[5].FirstChild.Value;
+                        DateTime sendDate = ParseDate(sendDatestr);
+                        //todo: insert to MGK_RECEIVE_HEADER - mana, sysCount, fileName, send_date, update_name
+                        int result = InsertMgkReceivedHeader(mana, numOfElements, filename.Split('\\')[filename.Split('\\').Length - 1], sendDate);
+                        foreach (XmlNode  node in list.ChildNodes)
+                        {
+                            string sys = node.ChildNodes[1].ChildNodes[1].FirstChild.Value;
+                            string mgkNumber = node.ChildNodes[1].ChildNodes[0].FirstChild.Value;
+                            int actionType = Convert.ToInt16(node.ChildNodes[0].ChildNodes[3].FirstChild.Value);
+                            decimal sumPay = 0;
+                            DateTime payDate = new DateTime();
+                            DateTime closeDate = new DateTime();
+                            if (actionType == 2)
+                            {
+                                sumPay = Convert.ToDecimal(node.ChildNodes[1].ChildNodes[8].ChildNodes[1].FirstChild.Value);
+                                string dateStr = node.ChildNodes[1].ChildNodes[8].ChildNodes[2].FirstChild.Value;
+                                payDate = ParseShortDate(dateStr);
+                            }
+                            if(actionType == 1)
+                            {
+                                closeDate = ParseShortDate(node.ChildNodes[1].ChildNodes[5].FirstChild.Value);
+                            }
+                            Result res = InsertMgkReceivedRow(mana, Convert.ToInt32(mgkNumber), actionType, sys, sumPay, payDate, closeDate);
+                            //TODO: insert respone to mgkFile
+                        }
+                    }
+                    else
+                    {
+                        //TODO: SEND Mashov to mgk with error code - num of elements wrong
+                    }
+
+                }
+                else
+                {
+                    //TODO: SEND Mashov to mgk with error code - file not exist
+                }
+
+
+            }
+
+
+
+        }
+        static DateTime ParseDate(string dtString)
+        {
+            string[] arrTemp = dtString.Split(' ');
+            string[] dateTemp = arrTemp[0].Split('/');
+            string[] timeTemp = arrTemp[1].Split(':');
+
+            DateTime dt = new DateTime(Convert.ToInt16(dateTemp[0]), Convert.ToInt16(dateTemp[1]), Convert.ToInt16(dateTemp[2]), Convert.ToInt16(timeTemp[0]), Convert.ToInt16(timeTemp[1]), Convert.ToInt16(timeTemp[2].Split('.')[0]));
+            return dt;
+        }
+        static DateTime ParseShortDate(string dtString)
+        {
+            string[] dateTemp = dtString.Split('-');
+
+            DateTime dt = new DateTime(Convert.ToInt16(dateTemp[0]), Convert.ToInt16(dateTemp[1]), Convert.ToInt16(dateTemp[2]));
+            return dt;
+        }
+        static int InsertMgkReceivedHeader (int mana, int sysCount, string fileName, DateTime sendDate)
+        {
+            int result = 0;
+            var client = new RestClient(ReceivedPortionURL + "InsertMgkReceivedHeaderRest");
+            client.Timeout = -1;
+            var requestIn = new RestRequest(Method.POST);
+            DateTime currDate = DateTime.Now;
+            requestIn.AddHeader("Content-Type", "application/json");
+            requestIn.AddJsonBody("{ \"PP_MANA\":"+mana.ToString()+",\"PP_SYS_COUNT\":"+sysCount.ToString()+",\"PP_FILE_NAME\" : \""+fileName+"\",\"PP_SEND_DATE\" : \""+sendDate.ToString("o") + "\", \"PP_UPDATE_NAME\" : \"OSB_WS\"}", "application/json");
+            //requestIn.AddParameter("application/json", currentRequest, ParameterType.RequestBody);
+            IRestResponse responseOut = client.Execute(requestIn);
+            if (responseOut != null && responseOut.Content != null && responseOut.StatusDescription == "OK")
+            {
+                JsonDocument res = JsonDocument.Parse(responseOut.Content);
+
+                // Accessing JSON properties
+                JsonElement root = res.RootElement;
+                return root.GetProperty("PP_OUT_RESULT").GetInt32();
+            }
+            else
+                return 0;
+           
+        }
+        static Result InsertMgkReceivedRow(int mana, int mgkNumber, int actionType, string sys, decimal sumPay, DateTime payDate, DateTime closeDate)
+        {
+            Result res = new Result();
+            var client = new RestClient(ReceivedPortionURL + "InsertMGKReceiveRowRest");
+            client.Timeout = -1;
+            var requestIn = new RestRequest(Method.POST);
+            DateTime currDate = DateTime.Now;
+            requestIn.AddHeader("Content-Type", "application/json");
+            string body = "{\"PP_MANA\" : " + mana.ToString() + ", \"PP_SYS\" : " + sys + ", \"PP_MGKNUMBER\" : " + mgkNumber.ToString() + ", \"PP_ACTIONTYPE\" : " + actionType + ", \"PP_SUMPAY\" : " + sumPay.ToString() + ", \"PP_PAYDATE\" : \"" + payDate.ToString("o") + "\", \"PP_CLOSEDDATE\" : \"" +closeDate.ToString("o") + "\", \"PP_UPDATE_NAME\" : \"OSB_WS\"}";
+            requestIn.AddJsonBody(body, "application/json");
+            //requestIn.AddParameter("application/json", currentRequest, ParameterType.RequestBody);
+            IRestResponse responseOut = client.Execute(requestIn);
+            if (responseOut != null && responseOut.Content != null && responseOut.StatusDescription == "OK")
+            {
+                JsonDocument resOut = JsonDocument.Parse(responseOut.Content);
+
+                // Accessing JSON properties
+                JsonElement root = resOut.RootElement;
+                res.resultCode = root.GetProperty("PP_OUT_RESULT").GetInt32();
+                res.resultDesc = root.GetProperty("PP_OUT_ERRBUF").GetString();
+                return res;
+            }
+            else
+                return res;      
+        }
+        static int GetCurrentReceivedMana()
+        {
+           // int mana;
+            var client = new RestClient(ReceivedPortionURL + "GetCurrentReceivedManaRest");
+            client.Timeout = -1;
+            var requestIn = new RestRequest(Method.POST);
+            DateTime currDate = DateTime.Now;
+            requestIn.AddHeader("Content-Type", "application/json");
+            requestIn.AddJsonBody("{}", "application/json");
+            //requestIn.AddParameter("application/json", currentRequest, ParameterType.RequestBody);
+            IRestResponse responseOut = client.Execute(requestIn);
+            if (responseOut != null && responseOut.Content != null && responseOut.StatusDescription == "OK")
+            {
+                JsonDocument res = JsonDocument.Parse(responseOut.Content);
+
+                // Accessing JSON properties
+                JsonElement root = res.RootElement;
+                return root.GetProperty("GETCURRENTRECEIVEDMANA").GetInt32();// responseOut.Content;
+            }
+            else
+                return 0;
+        }
         static void Main(string[] args)
         {
             //ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
-            CheckForPortionMashovFiles(args);
-            CheckForNewPortionToSend(args);
+
+            //CheckForPortionMashovFiles(args);
+            //CheckForNewPortionToSend(args);
+            CheckForRecievedFiles(args);
         }
     }
+}
+
+public class Result
+{
+    public int resultCode { get; set; }
+    public string resultDesc { get; set; }
 }
