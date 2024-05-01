@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Text.Json;
 using System.Xml;
+using System.Configuration;
 
 namespace MGKFilesHandling
 {
@@ -462,40 +463,200 @@ namespace MGKFilesHandling
                     xmlDoc.Load(filename);
                     XmlNode header = xmlDoc.SelectSingleNode("/updates_from_mgk/InterfaceHeader");
                     XmlNode list = xmlDoc.SelectSingleNode("/updates_from_mgk/Elements");
-                    string attributeValue = header.ChildNodes[9].FirstChild.Value;
-                    int numOfElements = Convert.ToInt32(attributeValue);
-                    if(numOfElements == list.ChildNodes.Count)
+                    
+                    //check errors in header
+                    int numOfElements = Convert.ToInt32(header.ChildNodes[9].FirstChild.Value);
+                    int mgkMana = Convert.ToInt32(header.ChildNodes[4].FirstChild.Value);
+                    string metroCode = header.ChildNodes[2].FirstChild.Value;
+                    string mgkCode = header.ChildNodes[0].FirstChild.Value;
+                    string errorDesc = "";
+                    int errorCode = 0;
+                    if(mgkMana != mana)
+                    {
+                        errorCode = 35;
+                        errorDesc = "מס' מנה לא תקין";
+                    }
+                    else if(metroCode != ConfigurationManager.AppSettings["MetroCode"])
+                    {
+                        errorCode = 34;
+                        errorDesc = "קוד מקבל לא תקין";
+                    }
+                    else if (mgkCode != ConfigurationManager.AppSettings["MgkCode"])
+                    {
+                        errorCode = 33;
+                        errorDesc = "קוד שולח לא תקין";
+                    }
+                    else if (numOfElements != list.ChildNodes.Count)
+                    {
+                        errorCode = 15;
+                        errorDesc = "מספר רשומות בקובץ לא תואם";
+                    }
+                     //start create mashov
+                     XmlDocument xmlMashovDoc = new XmlDocument();
+                    
+                    // Create the root element
+                    XmlElement root = xmlMashovDoc.CreateElement("mashov_to_mgk");
+                    
+
+                    //create the header
+                    XmlElement headerElement = xmlMashovDoc.CreateElement("InterfaceHeader");
+                    
+
+                    XmlElement childElement = xmlMashovDoc.CreateElement("Sender_Code");
+                    childElement.InnerText = ConfigurationManager.AppSettings["MetroCode"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Sender_Name");
+                    childElement.InnerText = ConfigurationManager.AppSettings["MetroName"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Receiver_Code");
+                    childElement.InnerText = ConfigurationManager.AppSettings["MgkCode"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Receiver_Name");
+                    childElement.InnerText = ConfigurationManager.AppSettings["MgkName"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Sender_Mana");
+                    childElement.InnerText = mana.ToString();
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Sender_DateTime");
+                    childElement.InnerText = DateTime.Now.ToString("O");
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Aplication_Code");
+                    childElement.InnerText = ConfigurationManager.AppSettings["ApplicationCode"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("Aplication_Name");
+                    childElement.InnerText = ConfigurationManager.AppSettings["ApplicationName"];
+                    headerElement.AppendChild(childElement);
+
+                    childElement = xmlMashovDoc.CreateElement("NoOfElements");
+                    childElement.InnerText = numOfElements.ToString();
+                    headerElement.AppendChild(childElement);
+
+                    if(errorCode != 0 && errorDesc != "")
+                    {
+                        childElement = xmlMashovDoc.CreateElement("Error_Code");
+                        childElement.InnerText = errorCode.ToString();
+                        headerElement.AppendChild(childElement);
+
+                        childElement = xmlMashovDoc.CreateElement("Error_Desc");
+                        childElement.InnerText = errorDesc;
+                        headerElement.AppendChild(childElement);
+                    }
+                    
+                    root.AppendChild(headerElement);
+                    //end header
+                    
+
+                    if (errorCode == 0 && errorDesc == "")
                     {
                         string sendDatestr = header.ChildNodes[5].FirstChild.Value;
                         DateTime sendDate = ParseDate(sendDatestr);
                         //todo: insert to MGK_RECEIVE_HEADER - mana, sysCount, fileName, send_date, update_name
                         int result = InsertMgkReceivedHeader(mana, numOfElements, filename.Split('\\')[filename.Split('\\').Length - 1], sendDate);
+                        XmlElement listElement = xmlMashovDoc.CreateElement("Elements");
                         foreach (XmlNode  node in list.ChildNodes)
                         {
+                            
                             string sys = node.ChildNodes[1].ChildNodes[1].FirstChild.Value;
                             string mgkNumber = node.ChildNodes[1].ChildNodes[0].FirstChild.Value;
+                            int seqId = Convert.ToInt32(node.ChildNodes[0].ChildNodes[2].FirstChild.Value);
                             int actionType = Convert.ToInt16(node.ChildNodes[0].ChildNodes[3].FirstChild.Value);
                             decimal sumPay = 0;
                             DateTime payDate = new DateTime();
                             DateTime closeDate = new DateTime();
-                            if (actionType == 2)
+                            XmlElement singleElemnt = xmlMashovDoc.CreateElement("Element");
+                            XmlElement idElemnt = xmlMashovDoc.CreateElement("Element_Id");
+                            XmlElement innerElement;
+
+                            innerElement = xmlMashovDoc.CreateElement("Numerator");
+                            innerElement.InnerText = seqId.ToString();
+                            idElemnt.AppendChild(innerElement);
+
+                            if (actionType == 1 || actionType == 2)
                             {
-                                sumPay = Convert.ToDecimal(node.ChildNodes[1].ChildNodes[8].ChildNodes[1].FirstChild.Value);
-                                string dateStr = node.ChildNodes[1].ChildNodes[8].ChildNodes[2].FirstChild.Value;
-                                payDate = ParseShortDate(dateStr);
+                                if (actionType == 2)
+                                {
+                                    sumPay = Convert.ToDecimal(node.ChildNodes[1].ChildNodes[8].ChildNodes[1].FirstChild.Value);
+                                    string dateStr = node.ChildNodes[1].ChildNodes[8].ChildNodes[2].FirstChild.Value;
+                                    payDate = ParseShortDate(dateStr);
+                                }
+                                else //(actionType == 1)
+                                {
+                                    closeDate = ParseShortDate(node.ChildNodes[1].ChildNodes[5].FirstChild.Value);
+                                }
+                                Result res = InsertMgkReceivedRow(mana, Convert.ToInt32(mgkNumber), actionType, sys, sumPay, payDate, closeDate, seqId);
+                                //TODO: insert respone to mgkFile
+
+                               
+                                if (res.resultCode == 1)
+                                {
+                                    innerElement = xmlMashovDoc.CreateElement("Status_Code");
+                                    innerElement.InnerText = "1";
+                                    idElemnt.AppendChild(innerElement);
+
+                                    innerElement = xmlMashovDoc.CreateElement("Status_Desc");
+                                    innerElement.InnerText = "תקין";
+                                    idElemnt.AppendChild(innerElement);
+                                }
+                                else
+                                {
+                                    innerElement = xmlMashovDoc.CreateElement("Status_Code");
+                                    innerElement.InnerText = "2";
+                                    idElemnt.AppendChild(innerElement);
+
+                                    innerElement = xmlMashovDoc.CreateElement("Status_Desc");
+                                    innerElement.InnerText = "שגוי";
+                                    idElemnt.AppendChild(innerElement);
+
+                                    innerElement = xmlMashovDoc.CreateElement("Error_Code");
+                                    innerElement.InnerText = res.resultCode.ToString();
+                                    idElemnt.AppendChild(innerElement);
+
+                                    innerElement = xmlMashovDoc.CreateElement("Error_Desc");
+                                    innerElement.InnerText = res.resultDesc;
+                                    idElemnt.AppendChild(innerElement);
+                                }
                             }
-                            if(actionType == 1)
+                            else //wrong action type
                             {
-                                closeDate = ParseShortDate(node.ChildNodes[1].ChildNodes[5].FirstChild.Value);
+                                innerElement = xmlMashovDoc.CreateElement("Status_Code");
+                                innerElement.InnerText = "2";
+                                idElemnt.AppendChild(innerElement);
+
+                                innerElement = xmlMashovDoc.CreateElement("Status_Desc");
+                                innerElement.InnerText = "שגוי";
+                                idElemnt.AppendChild(innerElement);
+
+                                innerElement = xmlMashovDoc.CreateElement("Error_Code");
+                                innerElement.InnerText = "38";
+                                idElemnt.AppendChild(innerElement);
+
+                                innerElement = xmlMashovDoc.CreateElement("Error_Desc");
+                                innerElement.InnerText = "סוג פעולה לא תקין";
+                                idElemnt.AppendChild(innerElement);
                             }
-                            Result res = InsertMgkReceivedRow(mana, Convert.ToInt32(mgkNumber), actionType, sys, sumPay, payDate, closeDate);
-                            //TODO: insert respone to mgkFile
+                            singleElemnt.AppendChild(idElemnt);
+                            listElement.AppendChild(singleElemnt);
                         }
+                        root.AppendChild(listElement);
+                       
                     }
-                    else
-                    {
-                        //TODO: SEND Mashov to mgk with error code - num of elements wrong
-                    }
+                    xmlMashovDoc.AppendChild(root);
+                    // Save the XML document to a file
+                    string[] arr = filename.Split('\\')[filename.Split('\\').Length - 1].Split('.');
+                    string mashovFileName = arr[0] + ".MASHOV.xml";
+                    string filePath = "C:\\Temp\\" + mashovFileName;
+                    xmlMashovDoc.Save(filePath);
+                    //else
+                    //{
+                    //    //TODO: SEND Mashov to mgk with error code - num of elements wrong
+                    //}
 
                 }
                 else
@@ -548,7 +709,7 @@ namespace MGKFilesHandling
                 return 0;
            
         }
-        static Result InsertMgkReceivedRow(int mana, int mgkNumber, int actionType, string sys, decimal sumPay, DateTime payDate, DateTime closeDate)
+        static Result InsertMgkReceivedRow(int mana, int mgkNumber, int actionType, string sys, decimal sumPay, DateTime payDate, DateTime closeDate, int seqId)
         {
             Result res = new Result();
             var client = new RestClient(ReceivedPortionURL + "InsertMGKReceiveRowRest");
@@ -556,7 +717,7 @@ namespace MGKFilesHandling
             var requestIn = new RestRequest(Method.POST);
             DateTime currDate = DateTime.Now;
             requestIn.AddHeader("Content-Type", "application/json");
-            string body = "{\"PP_MANA\" : " + mana.ToString() + ", \"PP_SYS\" : " + sys + ", \"PP_MGKNUMBER\" : " + mgkNumber.ToString() + ", \"PP_ACTIONTYPE\" : " + actionType + ", \"PP_SUMPAY\" : " + sumPay.ToString() + ", \"PP_PAYDATE\" : \"" + payDate.ToString("o") + "\", \"PP_CLOSEDDATE\" : \"" +closeDate.ToString("o") + "\", \"PP_UPDATE_NAME\" : \"OSB_WS\"}";
+            string body = "{\"PP_MANA\" : " + mana.ToString() + ", \"PP_SYS\" : " + sys + ", \"PP_MGKNUMBER\" : " + mgkNumber.ToString() + ", \"PP_ACTIONTYPE\" : " + actionType + ", \"PP_SUMPAY\" : " + sumPay.ToString() + ", \"PP_PAYDATE\" : \"" + payDate.ToString("o") + "\", \"PP_CLOSEDDATE\" : \"" +closeDate.ToString("o") + "\", \"PP_UPDATE_NAME\" : \"OSB_WS\", \"PP_SEQID\":"+seqId.ToString()+"}";
             requestIn.AddJsonBody(body, "application/json");
             //requestIn.AddParameter("application/json", currentRequest, ParameterType.RequestBody);
             IRestResponse responseOut = client.Execute(requestIn);
